@@ -456,6 +456,302 @@ update();
 
 </script>
 
+<style>
+#crystalBar{background:#32145a;border:1px solid #a66cff;color:#e5caff}
+#miniOverlay{position:fixed;inset:0;background:#080510f2;z-index:100;display:none;align-items:center;justify-content:center;padding:12px}
+#miniOverlay.open{display:flex}
+#miniPanel{width:min(100%,420px);max-height:94dvh;overflow:auto;background:linear-gradient(150deg,#29134a,#100b20);border:1px solid #a66cff;border-radius:20px;padding:14px;text-align:center}
+#miniPanel h2{color:#d8b5ff;margin:8px}
+#flightCanvas{display:block;width:min(100%,320px);height:auto;max-height:58dvh;margin:10px auto;border:2px solid #a66cff;border-radius:12px;background:#8bdcff;touch-action:none}
+.miniBtn{background:linear-gradient(135deg,#8c45dc,#5421a1);color:white;border:1px solid #c59aff;border-radius:11px;padding:11px;margin:4px;font-weight:bold}
+.miniBtn:disabled{opacity:.4}
+#crystalShop{display:none;text-align:left}
+.crystalItem{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#1b1230;border:1px solid #65428d;border-radius:12px;padding:10px;margin:8px 0}
+.crystalItem small{display:block;color:#c6b4df;margin-top:4px}
+.crystalItem button{background:#8c45dc;color:white;border:0;border-radius:8px;padding:9px;font-weight:bold}
+#flightInfo{color:#e5caff;font-size:13px}
+</style>
+
+<script>
+(function(){
+  // Новая валюта и улучшения
+  if(typeof s.crystals!=='number')s.crystals=0;
+  if(typeof s.flightMultiplier!=='number')s.flightMultiplier=1;
+  if(typeof s.flightShield!=='number')s.flightShield=0;
+  if(!s.crystalSkins)s.crystalSkins=['normal'];
+  if(!s.crystalSkin)s.crystalSkin='normal';
+
+  const crystalSkins=[
+    {id:'normal',name:'Обычная',price:0,filter:null},
+    {id:'purple',name:'Фиолетовая',price:100,filter:'hue-rotate(235deg) saturate(2)'},
+    {id:'neon',name:'Неоновая',price:180,filter:'hue-rotate(70deg) saturate(3) brightness(1.2)'},
+    {id:'rainbow',name:'Радужная',price:300,filter:'hue-rotate(140deg) saturate(2.5)'},
+    {id:'dark',name:'Тёмная',price:450,filter:'brightness(.35) saturate(1.5)'}
+  ];
+
+  // Кнопки и баланс
+  const header=document.querySelector('.actions');
+  const miniButton=document.createElement('button');
+  miniButton.className='btn';
+  miniButton.textContent='🎮 ИГРЫ';
+  header.insertBefore(miniButton,$('shopBtn'));
+
+  const crystalPill=document.createElement('span');
+  crystalPill.className='pill';
+  crystalPill.id='crystalBar';
+  crystalPill.textContent='💎 0';
+  document.querySelector('.pills').append(crystalPill);
+
+  const overlay=document.createElement('div');
+  overlay.id='miniOverlay';
+  overlay.innerHTML=`
+    <div id="miniPanel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="color:#d8b5ff">🐷 PIG ARCADE</b>
+        <button class="close" id="miniClose">✕</button>
+      </div>
+      <h2>🐦 Полёт свинки</h2>
+      <div id="flightInfo">💎 За каждый пройденный столб: 5 кристаллов</div>
+      <div style="margin:8px;color:#e5caff">Твой баланс: <b id="flightWallet">0</b> 💎</div>
+      <canvas id="flightCanvas" width="360" height="540"></canvas>
+      <div id="flightStatus" style="color:#e7d7ff;margin:8px">Нажми «СТАРТ», чтобы начать!</div>
+      <button class="miniBtn" id="flightStart">▶ СТАРТ</button>
+      <button class="miniBtn" id="flightShop">💎 МАГАЗИН</button>
+      <div id="crystalShop">
+        <h2>💜 Магазин кристаллов</h2>
+        <div id="crystalItems"></div>
+        <button class="miniBtn" id="shopBack">НАЗАД К ИГРЕ</button>
+      </div>
+      <div style="font-size:11px;color:#bda9d8;margin-top:8px">
+        Нажимай на экран, чтобы свинка взлетала!
+      </div>
+    </div>`;
+  document.body.append(overlay);
+
+  const canvas=$('flightCanvas');
+  const ctx=canvas.getContext('2d');
+  const W=360,H=540;
+  let running=false,started=false,raf=0;
+  let bird, pipes, frames, passed, shieldUsed, lastFrame;
+  const gravity=.34, flap=-6.2, pipeWidth=62, gap=158;
+
+  function updateCrystals(){
+    crystalPill.textContent='💎 '+fmt(s.crystals);
+    $('flightWallet').textContent=fmt(s.crystals);
+  }
+
+  const oldUpdate=update;
+  update=function(){
+    oldUpdate();
+    updateCrystals();
+    const crystalSkin=crystalSkins.find(x=>x.id===s.crystalSkin);
+    if(crystalSkin && crystalSkin.filter)$('pigPhoto').style.filter=crystalSkin.filter;
+  };
+
+  function drawBackground(){
+    const sky=ctx.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,'#64c9ff');
+    sky.addColorStop(1,'#d4f5ff');
+    ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#fff';ctx.globalAlpha=.8;
+    [[65,90],[265,145],[170,45]].forEach(([x,y])=>{
+      ctx.beginPath();ctx.arc(x,y,20,0,Math.PI*2);ctx.arc(x+22,y+3,17,0,Math.PI*2);ctx.arc(x-20,y+7,14,0,Math.PI*2);ctx.fill();
+    });
+    ctx.globalAlpha=1;
+    ctx.fillStyle='#74c94e';ctx.fillRect(0,H-35,W,35);
+    ctx.fillStyle='#3f9d36';ctx.fillRect(0,H-35,W,6);
+  }
+
+  function drawPipe(p){
+    const grad=ctx.createLinearGradient(p.x,0,p.x+pipeWidth,0);
+    grad.addColorStop(0,'#176d26');grad.addColorStop(.5,'#63d94b');grad.addColorStop(1,'#247d2c');
+    ctx.fillStyle=grad;
+    ctx.fillRect(p.x,0,pipeWidth,p.top);
+    ctx.fillRect(p.x,p.top-18,pipeWidth,18);
+    const bottomY=p.top+gap;
+    ctx.fillRect(p.x,bottomY,pipeWidth,H-bottomY-35);
+    ctx.fillRect(p.x,bottomY,pipeWidth,18);
+    ctx.strokeStyle='#15551e';ctx.lineWidth=3;
+    ctx.strokeRect(p.x,0,pipeWidth,p.top);
+    ctx.strokeRect(p.x,bottomY,pipeWidth,H-bottomY-35);
+  }
+
+  function drawBird(){
+    ctx.save();
+    ctx.translate(bird.x,bird.y);
+    ctx.rotate(Math.max(-.45,Math.min(.7,bird.vy*.055)));
+    ctx.font='42px Arial';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('🐷',0,0);
+    ctx.restore();
+  }
+
+  function newGame(){
+    cancelAnimationFrame(raf);
+    bird={x:90,y:245,vy:0,r:17};
+    pipes=[];
+    frames=0;passed=0;shieldUsed=false;
+    started=true;running=true;lastFrame=0;
+    $('flightStatus').textContent='💎 Кристаллы за пролёты: 0';
+    $('flightStart').textContent='🔄 ЗАНОВО';
+    addPipe(0);
+    raf=requestAnimationFrame(loop);
+  }
+
+  function addPipe(x){
+    const top=95+Math.random()*235;
+    pipes.push({x,top,scored:false});
+  }
+
+  function flapBird(){
+    if(!running){
+      if(!started)newGame();
+      return;
+    }
+    bird.vy=flap;
+  }
+
+  function collision(p){
+    const bx=bird.x,by=bird.y,r=bird.r;
+    if(by-r<0||by+r>H-35)return true;
+    if(bx+r>p.x&&bx-r<p.x+pipeWidth){
+      if(by-r<p.top||by+r>p.top+gap)return true;
+    }
+    return false;
+  }
+
+  function endGame(){
+    running=false;started=false;
+    $('flightStatus').textContent='💥 Игра окончена! Пролётов: '+passed+'. Нажми «ЗАНОВО».';
+    $('flightStart').textContent='🔄 ИГРАТЬ СНОВА';
+  }
+
+  function loop(time){
+    if(!running)return;
+    const dt=Math.min((time-lastFrame)/16.67||1,2);
+    lastFrame=time;
+    frames+=dt;
+    bird.vy+=gravity*dt;
+    bird.y+=bird.vy*dt;
+    pipes.forEach(p=>{
+      p.x-=2.5*dt;
+      if(!p.scored&&p.x+pipeWidth<bird.x){
+        p.scored=true;passed++;
+        const reward=5*s.flightMultiplier;
+        s.crystals+=reward;
+        $('flightStatus').textContent='💎 Пролётов: '+passed+' · +' + reward+' кристаллов';
+        save();updateCrystals();
+      }
+    });
+    if(pipes.length&&pipes[0].x<-pipeWidth)pipes.shift();
+    if(pipes.length===0||pipes[pipes.length-1].x<205)addPipe(W+10);
+
+    let hit=pipes.some(collision);
+    if(hit){
+      if(s.flightShield>0&&!shieldUsed){
+        shieldUsed=true;
+        bird.vy=-4;
+        bird.y=Math.max(50,Math.min(H-70,bird.y));
+        toast('🛡️ Щит спас тебя!');
+      }else{
+        drawBackground();pipes.forEach(drawPipe);drawBird();endGame();return;
+      }
+    }
+    drawBackground();
+    pipes.forEach(drawPipe);
+    drawBird();
+    ctx.fillStyle='#30134d';ctx.font='bold 22px Arial';ctx.textAlign='left';
+    ctx.fillText('💎 '+s.crystals,14,32);
+    raf=requestAnimationFrame(loop);
+  }
+
+  canvas.addEventListener('pointerdown',e=>{
+    e.preventDefault();
+    if(!running){if(!started)newGame();else return;}
+    flapBird();
+  });
+  $('flightStart').onclick=newGame;
+
+  function renderCrystalShop(){
+    $('crystalItems').innerHTML='';
+    crystalSkins.forEach(item=>{
+      const owned=s.crystalSkins.includes(item.id);
+      const selected=s.crystalSkin===item.id;
+      const row=document.createElement('div');
+      row.className='crystalItem';
+      const info=document.createElement('div');
+      info.innerHTML='<b></b><small></small>';
+      info.querySelector('b').textContent='🐷 '+item.name;
+      info.querySelector('small').textContent=owned?(selected?'Выбран':'Куплен'):item.price+' 💎';
+      const btn=document.createElement('button');
+      btn.textContent=selected?'ВЫБРАН':owned?'НАДЕТЬ':'КУПИТЬ';
+      btn.disabled=selected;
+      btn.onclick=()=>{
+        if(owned){
+          s.crystalSkin=item.id;
+          toast('🎨 Скин надет!');
+        }else if(s.crystals>=item.price){
+          s.crystals-=item.price;
+          s.crystalSkins.push(item.id);
+          s.crystalSkin=item.id;
+          toast('💜 Новый скин куплен!');
+        }else toast('Не хватает кристаллов!');
+        save();update();renderCrystalShop();
+      };
+      row.append(info,btn);$('crystalItems').append(row);
+    });
+
+    const upgrades=[
+      {name:'🛡️ Щит',desc:'Один раз спасает от столкновения',price:80,action:()=>s.flightShield++ ,level:s.flightShield},
+      {name:'💎 Двойная награда',desc:'Вдвое больше кристаллов за столб',price:150,action:()=>s.flightMultiplier=2,level:s.flightMultiplier===2?1:0}
+    ];
+    upgrades.forEach(u=>{
+      const row=document.createElement('div');row.className='crystalItem';
+      const info=document.createElement('div');
+      info.innerHTML='<b></b><small></small>';
+      info.querySelector('b').textContent=u.name;
+      info.querySelector('small').textContent=u.desc+(u.name.includes('Щит')?' · В запасе: '+u.level:u.level?' · Куплено':'');
+      const btn=document.createElement('button');
+      btn.textContent=u.level?'ЕСТЬ':'КУПИТЬ · '+u.price+' 💎';
+      btn.disabled=!!u.level;
+      btn.onclick=()=>{
+        if(s.crystals<u.price){toast('Не хватает кристаллов!');return;}
+        s.crystals-=u.price;u.action();
+        save();update();renderCrystalShop();toast('✨ Улучшение куплено!');
+      };
+      row.append(info,btn);$('crystalItems').append(row);
+    });
+  }
+
+  miniButton.onclick=()=>{
+    overlay.classList.add('open');
+    updateCrystals();
+  };
+  $('miniClose').onclick=()=>{
+    overlay.classList.remove('open');
+    running=false;started=false;cancelAnimationFrame(raf);
+  };
+  $('flightShop').onclick=()=>{
+    $('crystalShop').style.display='block';
+    $('flightCanvas').style.display='none';
+    $('flightStatus').style.display='none';
+    $('flightStart').style.display='none';
+    $('flightShop').style.display='none';
+    renderCrystalShop();
+  };
+  $('shopBack').onclick=()=>{
+    $('crystalShop').style.display='none';
+    $('flightCanvas').style.display='block';
+    $('flightStatus').style.display='block';
+    $('flightStart').style.display='inline-block';
+    $('flightShop').style.display='inline-block';
+    updateCrystals();
+  };
+
+  update();
+})();
+</script>
+</body>
+
 </body>
 
 </html>
